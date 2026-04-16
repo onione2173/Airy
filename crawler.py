@@ -216,7 +216,7 @@ def main():
     
     print("\n" + "=" * 50)
     print("아이리 완료!")
-    print("=" * 50)
+    print("=" * 50) 
 
 if __name__ == "__main__":
     main()
