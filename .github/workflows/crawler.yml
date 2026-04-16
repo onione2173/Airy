@@ -1,4 +1,4 @@
-name: Daily Keyword Crawler
+name: 아이리 (AI 리서처)
 
 on:
   schedule:
