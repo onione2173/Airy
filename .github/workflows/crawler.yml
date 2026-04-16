@@ -2,8 +2,8 @@ name: Daily Naver Keyword Crawler
 
 on:
   schedule:
-    # 매일 아침 9시 (한국 시간)
-    - cron: '0 0 * * *'
+    # 매일 아침 7시 (한국 시간)
+    - cron: '0 7 * * *'
   workflow_dispatch:
 
 jobs:
