@@ -1,4 +1,4 @@
-name: Daily Naver Keyword Crawler
+name: Daily Keyword Crawler
 
 on:
   schedule:
