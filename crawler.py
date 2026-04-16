@@ -2,15 +2,19 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import json
+from anthropic import Anthropic
 
 NAVER_ID = os.environ.get("NAVER_ID")
 NAVER_PASSWORD = os.environ.get("NAVER_PASSWORD")
 SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-def fetch_keywords():
-    """네이버 크리에이터 어드바이저에서 키워드 크롤링"""
+client = Anthropic()
+
+def fetch_naver_keywords():
+    """네이버 크리에이터 어드바이저 링크"""
     try:
-        print("🔄 네이버 키워드 크롤링 시작...")
+        print("🔄 네이버 크롤링 시작...")
         
         session = requests.Session()
         
@@ -24,41 +28,121 @@ def fetch_keywords():
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
-        print("✓ 네이버 로그인 중...")
-        response = session.post(login_url, data=login_data, headers=headers)
+        session.post(login_url, data=login_data, headers=headers)
         
-        if response.status_code == 200:
-            print("✓ 로그인 성공")
-            
-            # 크리에이터 어드바이저 접속
-            creator_url = "https://creator-advisor.naver.com/naver_blog/ralra_1/trends"
-            print("✓ 크리에이터 어드바이저 접속 중...")
-            
-            creator_response = session.get(creator_url, headers=headers)
-            
-            if creator_response.status_code == 200:
-                print("✓ 페이지 접속 성공")
-                
-                # 메시지 구성
-                message = "오늘의 네이버 블로그 트렌드 키워드를 가져왔어요!\n\n"
-                message += "크리에이터 어드바이저: https://creator-advisor.naver.com/naver_blog/ralra_1/trends\n\n"
-                message += "페이지에 접속해서 '설정순 보기'로 확인하고, 글을 작성할 때 참고해줘!"
-                
-                # Slack으로 발송
-                send_to_slack(message)
-                
-                return True
-            else:
-                print(f"❌ 크리에이터 어드바이저 접속 실패: {creator_response.status_code}")
-                return False
+        # 크리에이터 어드바이저 접속
+        creator_url = "https://creator-advisor.naver.com/naver_blog/ralra_1/trends"
+        creator_response = session.get(creator_url, headers=headers)
+        
+        if creator_response.status_code == 200:
+            print("✓ 네이버 접속 성공")
+            message = "오늘의 네이버 블로그 트렌드 키워드\n크리에이터 어드바이저: https://creator-advisor.naver.com/naver_blog/ralra_1/trends\n페이지에 접속해서 '설정순 보기'로 확인하고, 글을 작성할 때 참고해줘!\n\n"
+            return message
         else:
-            print(f"❌ 로그인 실패: {response.status_code}")
-            return False
+            return "❌ 네이버 크롤링 실패\n\n"
             
     except Exception as e:
-        print(f"❌ 에러 발생: {str(e)}")
-        send_to_slack(f"❌ 키워드 크롤링 실패: {str(e)}")
-        return False
+        print(f"❌ 네이버 에러: {str(e)}")
+        return f"❌ 네이버 크롤링 실패: {str(e)}\n\n"
+
+def fetch_fmkorea_posts():
+    """에펨코리아 부동산 게시판 크롤링"""
+    try:
+        print("🔄 에펨코리아 크롤링 시작...")
+        
+        url = "https://www.fmkorea.com/index.php?mid=realestate&sort_index=pop&order_type=desc&listStyle=list&page=1"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            posts = []
+            
+            # 상위 20개 글 크롤링
+            for i in range(20):
+                row_num = 3 + i  # tr[3]부터 시작
+                xpath_like = f'//*[@id="bd_3520786412_0"]/div/table/tbody/tr[{row_num}]/td[2]/a[1]'
+                
+                try:
+                    # BeautifulSoup으로 직접 XPath는 못하니 다른 방식 사용
+                    # tbody의 tr들을 모두 찾기
+                    tbody = soup.find('tbody', {'id': 'bd_3520786412_0'})
+                    if not tbody:
+                        tbody = soup.find('table').find('tbody')
+                    
+                    if tbody:
+                        rows = tbody.find_all('tr')
+                        if i < len(rows):
+                            row = rows[i]
+                            tds = row.find_all('td')
+                            if len(tds) > 1:
+                                link_elem = tds[1].find('a')
+                                if link_elem:
+                                    title = link_elem.get_text(strip=True)
+                                    href = link_elem.get('href', '')
+                                    full_url = f"https://www.fmkorea.com{href}" if href.startswith('/') else href
+                                    
+                                    posts.append({
+                                        'title': title,
+                                        'url': full_url
+                                    })
+                except Exception as e:
+                    print(f"글 {i+1} 크롤링 실패: {e}")
+                    continue
+            
+            print(f"✓ {len(posts)}개 글 크롤링 성공")
+            return posts
+        else:
+            print(f"❌ 에펨코리아 접속 실패: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        print(f"❌ 에펨코리아 에러: {str(e)}")
+        return []
+
+def analyze_post_with_claude(title, url):
+    """Claude AI로 글 분석"""
+    try:
+        prompt = f"""
+이 블로그 글이 네이버 블로그 경제/금융 카테고리에서 좋은 글이 될 수 있는지 판단해줘.
+
+글 제목: {title}
+출처: {url}
+
+평가 기준:
+1. 독창성과 실용성 (개인 경험/팁 포함?)
+2. 호기심/논쟁 유발 가능성
+3. 데이터/수치 기반 내용 가능성
+4. 댓글 유도 가능성
+
+답변 형식:
+- 평점: 1~5점
+- 추천 여부: 추천/비추천
+- 간단한 이유 (1-2줄)
+
+예시:
+평점: 4점
+추천 여부: 추천
+이유: 실질적인 절세 팁이 있고 댓글을 유발할 만한 내용
+"""
+        
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        return response.content[0].text
+        
+    except Exception as e:
+        print(f"Claude 분석 에러: {str(e)}")
+        return f"분석 실패: {str(e)}"
 
 def send_to_slack(message):
     """Slack으로 메시지 발송"""
@@ -77,21 +161,47 @@ def send_to_slack(message):
     except Exception as e:
         print(f"❌ Slack 발송 에러: {str(e)}")
 
-if __name__ == "__main__":
+def main():
     print("=" * 50)
-    print("네이버 키워드 크롤러 시작")
+    print("아이리 (AI 리서처) 시작")
     print("=" * 50)
     
     if not NAVER_ID or not NAVER_PASSWORD or not SLACK_WEBHOOK:
-        print("❌ 환경변수가 없습니다!")
-        print("필요한 환경변수:")
-        print("- NAVER_ID")
-        print("- NAVER_PASSWORD")
-        print("- SLACK_WEBHOOK")
-        exit(1)
+        print("❌ 필수 환경변수 없음")
+        return
     
-    fetch_keywords()
+    # 1. 네이버 크롤링
+    naver_message = fetch_naver_keywords()
     
+    # 2. 에펨코리아 크롤링
+    print("\n🔍 에펨코리아 크롤링 중...")
+    posts = fetch_fmkorea_posts()
+    
+    # 3. 상위 2개 글 분석
+    fmkorea_message = "오늘의 에펨코리아 부동산 인기글 추천\n\n"
+    
+    if len(posts) >= 2:
+        for i in range(2):
+            post = posts[i]
+            print(f"\n분석 중: {post['title']}")
+            
+            analysis = analyze_post_with_claude(post['title'], post['url'])
+            
+            fmkorea_message += f"글 {i+1}: {post['title']}\n"
+            fmkorea_message += f"링크: {post['url']}\n"
+            fmkorea_message += f"분석:\n{analysis}\n\n"
+    else:
+        fmkorea_message += "크롤링된 글이 부족합니다."
+    
+    # 4. Slack 발송
+    full_message = naver_message + fmkorea_message
+    
+    print("\n📤 Slack 발송 중...")
+    send_to_slack(full_message)
+    
+    print("\n" + "=" * 50)
+    print("아이리 완료!")
     print("=" * 50)
-    print("크롤링 완료")
-    print("=" * 50)
+
+if __name__ == "__main__":
+    main()
