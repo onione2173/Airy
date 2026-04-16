@@ -1,7 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
 import os
-import json
 from anthropic import Anthropic
 
 NAVER_ID = os.environ.get("NAVER_ID")
@@ -43,7 +42,7 @@ def fetch_naver_keywords():
             
     except Exception as e:
         print(f"❌ 네이버 에러: {str(e)}")
-        return f"❌ 네이버 크롤링 실패: {str(e)}\n\n"
+        return f"❌ 네이버 크롤링 실패\n\n"
 
 def fetch_fmkorea_posts():
     """에펨코리아 부동산 게시판 크롤링"""
@@ -56,45 +55,46 @@ def fetch_fmkorea_posts():
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
+            print("✓ 에펨코리아 접속 성공")
             soup = BeautifulSoup(response.content, 'html.parser')
             posts = []
             
-            # 상위 20개 글 크롤링
-            for i in range(20):
-                row_num = 3 + i  # tr[3]부터 시작
-                xpath_like = f'//*[@id="bd_3520786412_0"]/div/table/tbody/tr[{row_num}]/td[2]/a[1]'
+            # tbody 찾기
+            tbody = soup.find('tbody')
+            
+            if tbody:
+                rows = tbody.find_all('tr')
+                print(f"총 {len(rows)}개 행 발견")
                 
-                try:
-                    # BeautifulSoup으로 직접 XPath는 못하니 다른 방식 사용
-                    # tbody의 tr들을 모두 찾기
-                    tbody = soup.find('tbody', {'id': 'bd_3520786412_0'})
-                    if not tbody:
-                        tbody = soup.find('table').find('tbody')
-                    
-                    if tbody:
-                        rows = tbody.find_all('tr')
-                        if i < len(rows):
-                            row = rows[i]
-                            tds = row.find_all('td')
-                            if len(tds) > 1:
-                                link_elem = tds[1].find('a')
-                                if link_elem:
-                                    title = link_elem.get_text(strip=True)
-                                    href = link_elem.get('href', '')
+                # 모든 행에서 링크 추출
+                for idx, row in enumerate(rows):
+                    try:
+                        tds = row.find_all('td')
+                        if len(tds) > 1:
+                            # td[2]에서 링크 찾기 (0-indexed이므로 1번 인덱스)
+                            link_elem = tds[1].find('a')
+                            if link_elem:
+                                title = link_elem.get_text(strip=True)
+                                href = link_elem.get('href', '')
+                                
+                                if title and href:
                                     full_url = f"https://www.fmkorea.com{href}" if href.startswith('/') else href
-                                    
                                     posts.append({
                                         'title': title,
                                         'url': full_url
                                     })
-                except Exception as e:
-                    print(f"글 {i+1} 크롤링 실패: {e}")
-                    continue
+                                    print(f"✓ 글 {len(posts)}: {title[:30]}...")
+                                    
+                                    if len(posts) >= 20:
+                                        break
+                    except Exception as e:
+                        print(f"행 {idx} 파싱 실패: {e}")
+                        continue
             
-            print(f"✓ {len(posts)}개 글 크롤링 성공")
+            print(f"✓ 총 {len(posts)}개 글 크롤링 성공")
             return posts
         else:
             print(f"❌ 에펨코리아 접속 실패: {response.status_code}")
@@ -102,6 +102,8 @@ def fetch_fmkorea_posts():
             
     except Exception as e:
         print(f"❌ 에펨코리아 에러: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def analyze_post_with_claude(title, url):
@@ -111,7 +113,6 @@ def analyze_post_with_claude(title, url):
 이 블로그 글이 네이버 블로그 경제/금융 카테고리에서 좋은 글이 될 수 있는지 판단해줘.
 
 글 제목: {title}
-출처: {url}
 
 평가 기준:
 1. 독창성과 실용성 (개인 경험/팁 포함?)
@@ -119,7 +120,7 @@ def analyze_post_with_claude(title, url):
 3. 데이터/수치 기반 내용 가능성
 4. 댓글 유도 가능성
 
-답변 형식:
+답변 형식 (한국어로):
 - 평점: 1~5점
 - 추천 여부: 추천/비추천
 - 간단한 이유 (1-2줄)
@@ -142,7 +143,7 @@ def analyze_post_with_claude(title, url):
         
     except Exception as e:
         print(f"Claude 분석 에러: {str(e)}")
-        return f"분석 실패: {str(e)}"
+        return f"분석 실패"
 
 def send_to_slack(message):
     """Slack으로 메시지 발송"""
@@ -155,11 +156,14 @@ def send_to_slack(message):
         
         if response.status_code == 200:
             print("✓ Slack 발송 성공")
+            return True
         else:
             print(f"❌ Slack 발송 실패: {response.status_code}")
+            return False
             
     except Exception as e:
         print(f"❌ Slack 발송 에러: {str(e)}")
+        return False
 
 def main():
     print("=" * 50)
@@ -171,13 +175,15 @@ def main():
         return
     
     # 1. 네이버 크롤링
+    print("\n[1단계] 네이버 크롤링")
     naver_message = fetch_naver_keywords()
     
     # 2. 에펨코리아 크롤링
-    print("\n🔍 에펨코리아 크롤링 중...")
+    print("\n[2단계] 에펨코리아 크롤링")
     posts = fetch_fmkorea_posts()
     
     # 3. 상위 2개 글 분석
+    print("\n[3단계] 상위 2개 글 분석")
     fmkorea_message = "오늘의 에펨코리아 부동산 인기글 추천\n\n"
     
     if len(posts) >= 2:
@@ -190,13 +196,22 @@ def main():
             fmkorea_message += f"글 {i+1}: {post['title']}\n"
             fmkorea_message += f"링크: {post['url']}\n"
             fmkorea_message += f"분석:\n{analysis}\n\n"
+    elif len(posts) > 0:
+        print(f"⚠️ 크롤링된 글이 {len(posts)}개뿐입니다")
+        fmkorea_message += f"크롤링된 글이 {len(posts)}개뿐입니다.\n\n"
+        for i, post in enumerate(posts):
+            analysis = analyze_post_with_claude(post['title'], post['url'])
+            fmkorea_message += f"글 {i+1}: {post['title']}\n"
+            fmkorea_message += f"링크: {post['url']}\n"
+            fmkorea_message += f"분석:\n{analysis}\n\n"
     else:
-        fmkorea_message += "크롤링된 글이 부족합니다."
+        print("❌ 크롤링된 글이 없습니다")
+        fmkorea_message += "❌ 크롤링 실패: 글을 찾을 수 없습니다.\n\n"
     
     # 4. Slack 발송
+    print("\n[4단계] Slack 발송")
     full_message = naver_message + fmkorea_message
     
-    print("\n📤 Slack 발송 중...")
     send_to_slack(full_message)
     
     print("\n" + "=" * 50)
